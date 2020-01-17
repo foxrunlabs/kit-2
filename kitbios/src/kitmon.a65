@@ -1,0 +1,1095 @@
+;===============================================================================
+; Copyright 2020 Ryan Clarke
+;
+; Licensed under the Apache License, Version 2.0 (the "License"); you may not
+; use this file except in compliance with the License. You may obtain a copy of
+; the License at
+; 
+;     http://www.apache.org/licenses/LICENSE-2.0
+;
+; Unless required by applicable law or agreed to in writing, software
+; distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+; WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+; License for the specific language governing permissions and limitations under
+; the License.
+;===============================================================================
+
+;===============================================================================
+; Program   : KitMon
+; File Name : kitmon.a65
+; Project   : Kit-2 8-bit Computer
+; Author    : Ryan Clarke
+; E-mail    : kj6msg@icloud.com
+;-------------------------------------------------------------------------------
+; Purpose   : Kit-2 BIOS Monitor.
+;===============================================================================
+
+
+.PC02
+
+.MACPACK    generic
+.MACPACK    longbranch
+
+.INCLUDE    "kit2.inc"
+
+.IMPORT     rst
+
+.IMPORT     cputs
+.IMPORT     getch
+.IMPORT     putch
+
+.EXPORT     kitmon
+
+
+;===============================================================================
+; MACROS
+;===============================================================================
+
+;= CONSTANTS ===================================================================
+            
+            PROMPT = '-'                ; command prompt character
+            
+            CMDMAX = 79                 ; maximum command line length
+
+
+;===============================================================================
+; KITMON
+;===============================================================================
+
+.CODE
+
+kitmon:     stz     pabDump             ; initial memory dump address is $0300
+            lda     #$03
+            sta     pabDump+1
+            
+            jsr     printregs           ; start off by printing stored registers
+            
+            ;- get command -----------------------------------------------------
+@getcmd:    lda     #PROMPT
+            jsr     putch               ; print command prompt
+            
+            jsr     readln              ; get command line
+            bcc     @getcmd             ; C flag zero if ESC received
+            
+            ;- evaluate command ------------------------------------------------
+            lda     szCmdLn             ; first character entered is command
+            sec
+            sbc     #'?'                ; map ?-Z to 0-27
+            bmi     @invalid            ; less than '?' is invalid
+            cmp     #'Z'-'?'+1
+            bge     @invalid            ; greater than 'Z' is invalid
+            
+            asl     A                   ; adjust index for 16-bit addresses
+            tax
+            jsr     @command            ; dummy to allow indirect indexed JSR
+            bra     @getcmd             ; keep getting commands on return
+            
+@command:   jmp     (apfnCmds, X)
+            
+            ;- invalid command -------------------------------------------------
+@invalid:   jsr     invalid
+            bra     @getcmd             ; get more commands
+
+
+;===============================================================================
+; MONITOR COMMANDS
+;===============================================================================
+
+;= INVALID =====================================================================
+; Invalid command.
+;
+; Parameters:
+;   none.
+;
+; Returns:
+;   none.
+;
+; Remarks:
+;   This function alerts the user of an invalid command by sending a BEL to the
+;   terminal.
+
+.CODE
+
+.PROC invalid
+
+            lda     #BEL
+            jsr     putch
+            
+            rts
+
+.ENDPROC
+
+
+;= DUMP ========================================================================
+; Display 128 bytes of memory.
+;
+; Parameters:
+;   word - start address (optional).
+;
+; Returns:
+;   none.
+;
+; Remarks:
+;   This function will display 128 bytes of consecutive memory in hexadecimal
+;   and ASCII. If no address is specified, then the function will use a stored
+;   address. The function automatically updates the stored address at completion
+;   to enable quick repetition of memory dumps.
+
+.CODE
+
+.PROC dump
+
+            lda     pabDump             ; read stored address LSB
+            sta     dwArg1              ; set dwArg1 LSB to stored address LSB
+            lda     pabDump+1           ; read stored address MSB
+            sta     dwArg1+1            ; set dwArg1 MSB to stored address MSB
+            
+            ldx     #1                  ; set starting offset to 1
+            jsr     trimspace           ; trim spaces after command character
+            
+            lda     szCmdLn, X          ; read first non-space after command
+            bze     linecount           ; branch if no address entered
+            
+            ;- get address from command line -----------------------------------
+            lda     #2                  ; set byte counter to 2
+            jsr     getbytes            ; get 16-bit address from command line
+            bcc     ::invalid           ; branch if invalid address
+            
+            lda     word                ; read address LSB
+            sta     dwArg1              ; store address LSB to dwArg1 LSB
+            lda     word+1              ; read address MSB
+            sta     dwArg1+1            ; store address MSB to dwArg1 MSB
+            
+            ;- print address ---------------------------------------------------
+linecount:  ldx     #8                  ; set line counter to 8
+printaddr:  phx                         ; save the line counter
+            lda     dwArg1+1            ; read address MSB
+            jsr     printhex            ; print address MSB
+            lda     dwArg1              ; read address LSB
+            jsr     printhex            ; print address LSB
+            lda     #':'                ; set character to ':'
+            jsr     putch               ; print ':'
+            lda     #' '                ; set character to space
+            jsr     putch               ; print space
+            
+            ;- print hex bytes -------------------------------------------------
+            ldy     #0                  ; set byte counter to zero
+bytes:      phy                         ; save byte counter
+            lda     (dwArg1), Y         ; read byte
+            jsr     printhex            ; print byte in hex
+            lda     #' '                ; set character to space
+            jsr     putch               ; print space
+            ply                         ; restore byte counter
+            
+            ;- update byte counter ---------------------------------------------
+            iny                         ; increment byte counter
+            cpy     #16                 ; print 16 bytes
+            bne     bytes               ; branch if less than 16 bytes printed
+            
+            lda     #' '                ; set character to space
+            jsr     putch               ; print space
+            
+            ;- print ASCII representation --------------------------------------
+            ldy     #0                  ; reset byte counter to zero
+ascii:      lda     (dwArg1), Y         ; read byte
+            cmp     #' '                ; space is the lowest printable byte
+            blt     noprint             ; branch if less than space
+            cmp     #'~'+1              ; tilde is upper end uof printable bytes
+            blt     print               ; branch if less than or equal to ~
+            
+noprint:    lda     #'.'                ; non-printable characters as '.'
+print:      phy                         ; save byte counter
+            jsr     putch               ; print byte in ASCII
+            ply                         ; restore byte counter
+            
+            iny                         ; increment byte counter
+            cpy     #16                 ; print 16 bytes
+            bne     ascii               ; branch if less than 16 bytes printed
+            
+            ;- next line -------------------------------------------------------
+            lda     #LF                 ; set character to line feed
+            jsr     putch               ; print line feed
+            
+            clc                         ; clear C for 16-bit addition
+            lda     dwArg1              ; read address LSB
+            adc     #16                 ; increment by 16 bytes
+            sta     dwArg1              ; store new address LSB
+            lda     dwArg1+1            ; read address MSB
+            adc     #0                  ; add carry flag
+            sta     dwArg1+1            ; store address MSB
+            
+            plx                         ; restore line counter
+            dex                         ; decrement line counter
+            bnz     printaddr           ; branch if less than 8 lines printed
+            
+            ;- update stored address -------------------------------------------
+            lda     dwArg1              ; read address LSB
+            sta     pabDump             ; store address LSB into stored value
+            lda     dwArg1+1            ; read address MSB
+            sta     pabDump+1           ; store address MSB into stored value
+            
+            rts                         ; done!
+
+.ENDPROC
+
+
+;= ENTER =======================================================================
+; Write to memory.
+;
+; Parameters:
+;   word    - starting address.
+;   byte(s) - data.
+;
+; Returns:
+;   none.
+;
+; Remarks:
+;   This function writes one or more consecutive bytes to an address specified
+;   on the command line.
+
+.CODE
+
+.PROC enter
+
+            ldx     #1                  ; set starting offset to 1
+            jsr     trimspace           ; trim spaces after command character
+            
+            lda     szCmdLn, X          ; read first non-space after command
+            jeq     invalid             ; branch if no address entered
+            
+            ;- get address from command line -----------------------------------
+            lda     #2                  ; set byte counter to 2
+            jsr     getbytes            ; get 16-bit address from command line
+            jcc     invalid             ; branch if invalid address
+            
+            lda     word                ; read address LSB
+            sta     dwArg1              ; store address LSB to dwArg1 LSB
+            lda     word+1              ; read address MSB
+            sta     dwArg1+1            ; store address MSB to dwArg1 MSB
+            
+            ;- get data from command line --------------------------------------
+dataloop:   jsr     trimspace           ; trim spaces after address/bytes
+            
+            lda     szCmdLn, X          ; read first non-space after addr/byte
+            bze     done                ; branch if nothing entered
+            
+            lda     #1                  ; set byte counter to 1
+            jsr     getbytes            ; get 8-bit byte from command line
+            jcc     invalid             ; branch if invalid byte
+            
+            ;- store byte at address -------------------------------------------
+            lda     byte                ; read byte
+            sta     (dwArg1)            ; store byte at address pointed by dwArg1
+            
+            inc     dwArg1              ; increment address pointer LSB
+            bnz     dataloop            ; branch if not rolled over yet
+            inc     dwArg1+1            ; increment address pointer MSB
+            bra     dataloop            ; branch for more data
+
+done:       rts                         ; done!
+            
+.ENDPROC
+
+
+;= FILL ========================================================================
+; Fill memory with byte.
+;
+; Parameters:
+;   word - starting address.
+;   word - ending address.
+;   byte - fill byte.
+;
+; Returns:
+;   none.
+;
+; Remarks:
+;   This function fills an address range with a specified byte. It will not wrap
+;   around from $FFFF->$0000.
+
+.CODE
+
+.PROC fill
+
+            ldx     #1                  ; set starting offset to 1
+            jsr     trimspace           ; trim spaces after command character
+            
+            lda     szCmdLn, X          ; read first non-space after command
+            jeq     invalid             ; branch if no address entered
+            
+            ;- get first address of range --------------------------------------
+            lda     #2                  ; set byte counter to 2
+            jsr     getbytes            ; get 16-bit address from command line
+            jcc     invalid             ; branch if invalid address
+            
+            ;- save first address ----------------------------------------------
+            lda     word                ; read address LSB
+            sta     dwArg1              ; store address LSB to dwArg1 LSB
+            lda     word+1              ; read address MSB
+            sta     dwArg1+1            ; store address MSB to dwArg1 MSB
+            
+            ;- get last address of range ---------------------------------------
+            jsr     trimspace           ; trim spaces after first address
+            
+            lda     szCmdLn, X          ; read first non-space after address
+            jeq     invalid             ; branch if no second address entered
+            
+            lda     #2                  ; set byte counter to 2
+            jsr     getbytes            ; get 16-bit address from command line
+            jcc     invalid             ; branch if invalid address
+            
+            ;- verify second address is greater than or equal to first ---------
+            lda     word+1              ; read second address MSB
+            cmp     dwArg1+1            ; compare with first address MSB
+            jcc     invalid             ; branch if second < first
+            
+            lda     word                ; read second address LSB
+            cmp     dwArg1              ; compare with first address LSB
+            jcc     invalid             ; branch if second < first
+            
+            ;- save second address ---------------------------------------------
+            lda     word                ; read address LSB
+            sta     dwArg2              ; store address LSB to dwArg2 LSB
+            lda     word+1              ; read address MSB
+            sta     dwArg2+1            ; store address MSB to dwArg2 MSB
+            
+            ;- get fill bytes --------------------------------------------------
+            jsr     trimspace           ; trim spaces after second address
+            
+            lda     szCmdLn, X          ; read first non-space after address
+            jeq     invalid             ; branch if no fill byte entered
+            
+            lda     #1                  ; set byte counter to 1
+            jsr     getbytes            ; get 8-bit fill byte from command line
+            jcc     invalid             ; branch if invalid byte
+            
+            ;- fill memory range with byte -------------------------------------
+fillloop:   lda     byte                ; read fill byte
+            sta     (dwArg1)            ; store fill byte in memory
+            
+            ;- increment first address and check for rollover ------------------
+            inc     dwArg1              ; increment first address LSB
+            bnz     compaddr            ; branch if no rollover from $FF->$00
+            inc     dwArg1+1            ; increment first address MSB
+            bze     done                ; branch if rollover from $FFFF->$0000
+                                    
+            ;- keep looping if dwArg1 <= dwArg2 ------------------------------------
+compaddr:   lda     dwArg1+1            ; read first address MSB
+            cmp     dwArg2+1            ; compare with second address MSB
+            blt     fillloop            ; branch if first < second
+            bne     done                ; branch if first <> second
+            
+            lda     dwArg1              ; read first address LSB
+            cmp     dwArg2              ; compare with second address LSB
+            ble     fillloop            ; branch if first <= second
+                                    
+done:       rts                         ; done!
+
+.ENDPROC
+
+
+;= HELP ========================================================================
+; Display help message.
+;
+; Parameters:
+;   none.
+;
+; Returns:
+;   none.
+;
+; Remarks:
+;   This function displays the help message.
+
+.CODE
+
+.PROC help
+
+            ldx     #.HIBYTE(szHelp)    ; read help message address MSB
+            lda     #.LOBYTE(szHelp)    ; read help message address LSB
+            jsr     cputs               ; print help message
+            
+            rts                         ; done!
+
+.ENDPROC
+
+
+;= JUMP ========================================================================
+; Jump to address.
+;
+; Parameters:
+;   word - address (optional).
+;
+; Returns:
+;   none.
+;
+; Remarks:
+;   This function jumps to an address specified on the command line. If no
+;   address is specified, it will jump to the last address stored at wPCreg. The
+;   A, X, Y, S, and P registers will be loaded with stored values.
+
+.CODE
+
+.PROC jump
+
+            ldx     #1                  ; set starting offset to 1
+            jsr     trimspace           ; trim spaces after command character
+            
+            lda     szCmdLn, X          ; read first non-space after command
+            bze     loadregs            ; branch if no address entered
+            
+            ;- get address from command line -----------------------------------
+            lda     #2                  ; set byte counter to 2
+            jsr     getbytes            ; get 16-bit address from command line
+            jcc     invalid             ; branch if invalid address
+            
+            lda     word                ; read address LSB
+            sta     wPCreg              ; store address LSB to wPCreg LSB
+            lda     word+1              ; read address MSB
+            sta     wPCreg+1            ; store address MSB to wPCreg MSB
+            
+            ;- load registers from stored values -------------------------------
+loadregs:   ldx     bySreg              ; read stored S register
+            txs                         ; transfer stored S to actual S
+            lda     byPreg              ; read stored P register
+            pha                         ; save stored P register to stack
+            lda     byAreg              ; read stored A register
+            ldx     byXreg              ; read stored X register
+            ldy     byYreg              ; read stored Y register
+            plp                         ; load stored P register to actual P
+            jmp     (wPCreg)            ; jump to stored PC
+            
+            rts                         ; done!
+
+.ENDPROC
+
+
+;= REGS ========================================================================
+; Display CPU registers.
+;
+; Parameters:
+;   byte and byte - register and data (optional).
+;
+; Returns:
+;   none.
+;
+; Remarks:
+;   This function displays the CPU registers stored in RAM. It does not display
+;   the current values, due to them constantly changing. If a specific register
+;   is entered with the command, the stored register value will be updated with
+;   the byte entered on the command line.
+
+.CODE
+
+.PROC regs
+
+            ldx     #1                  ; set starting offset to 1
+            jsr     trimspace           ; trim spaces after command character
+            
+            lda     szCmdLn, X          ; read first non-space after command
+            jeq     printregs           ; branch if no register selected.
+            
+            ;- check for valid register ----------------------------------------
+            ldy     #0                  ; stored register address offset
+            cmp     #'A'                ; A register
+            beq     getupdate           ; branch if A register
+            iny                         ; increment offset
+            cmp     #'X'                ; X register
+            beq     getupdate           ; branch if X register
+            iny                         ; increment offset
+            cmp     #'Y'                ; Y register
+            beq     getupdate           ; branch if Y register
+            iny                         ; increment offset
+            cmp     #'S'                ; S register
+            beq     getupdate           ; branch if S register
+            iny                         ; increment offset
+            cmp     #'P'                ; P register
+            jne     invalid             ; branch if not P register
+            
+            ;- update the stored register in memory ----------------------------
+getupdate:  inx                         ; advance the command line index
+            jsr     trimspace           ; trim spaces after register character
+            
+            lda     szCmdLn, X          ; read first non-space after register
+            jeq     invalid             ; branch if no byte entered
+            
+            phy                         ; save the stored register offset
+            lda     #1                  ; set byte counter to 1
+            jsr     getbytes            ; get 8-bit byte from command line
+            ply                         ; restore the stored register offset
+            jcc     invalid             ; branch if invalid byte entered
+            
+            lda     byte                ; read the entered byte
+            sta     byAreg, Y           ; write byte to appropriate stored reg
+            
+            rts                         ; done!
+
+.ENDPROC
+
+
+;= STACK =======================================================================
+; Print the stack.
+;
+; Parameters:
+;   none.
+;
+; Returns:
+;   none.
+;
+; Remarks:
+;   This function prints the stack from bottom to top, referencing the stored
+;   stack pointer. The current stored stack pointer is printed as 'S'.
+
+.CODE
+
+.PROC stack
+
+            lda     #$01                ; load stack page
+            sta     dwArg1+1            ; dwArg1 MSB is stack page
+            lda     #$FF                ; load bottom of stack
+            sta     dwArg1              ; dwArg1 LSB is stack pointer
+            
+loop:       lda     #$01                ; load stack page
+            jsr     printhex            ; print stack page in hex
+            lda     dwArg1              ; load stack pointer
+            jsr     printhex            ; print stack pointer in hex
+            
+            lda     #':'                ; load colon character
+            jsr     putch               ; print colon character
+            lda     #' '                ; load space character
+            jsr     putch               ; print space character
+            
+            lda     dwArg1              ; load stack pointer
+            cmp     bySreg              ; compare with stored stack pointer
+            beq     done                ; branch if equal
+            
+            lda     (dwArg1)            ; load data at stack pointer
+            jsr     printhex            ; print data in hex format
+            
+            lda     #LF                 ; load linefeed character
+            jsr     putch               ; print linefeed character
+            
+            dec     dwArg1              ; decrement stack pointer
+            bra     loop                ; loop
+            
+done:       lda     #'S'                ; load S character
+            jsr     putch               ; print S character
+            
+            lda     #LF                 ; load linefeed character
+            jsr     putch               ; printer linefeed
+            
+            rts                         ; done!
+
+.ENDPROC
+
+
+;===============================================================================
+; SUBROUTINES
+;===============================================================================
+
+;= ASC2BIN =====================================================================
+; Convert ASCII hexadecimal to 4-bit nibble.
+;
+; Parameters:
+;   A = ASCII hexadecimal character.
+;
+; Returns:
+;   A = 4-bit nibble.
+;
+; Remarks:
+;   This function converts an ASCII hexadecimal value to its binary value. For
+;   example, it converts 'A' to $0A. The function assumes a valid input. Use
+;   the isxdigit function to verify beforehand.
+
+.CODE
+
+.PROC asc2bin
+            
+            eor     #'0'                ; map digits to 0-9
+            cmp     #$0A                ; check if within 0-9
+            blt     exit                ; < $0A? done
+            
+            adc     #$88                ; map "A"-"F" to $FA-FF
+            cmp     #$FA                ; check if within $FA-FF
+            blt     exit                ; < $FA? invalid
+                        
+            and     #$0F                ; convert to $0A-$0F
+            
+exit:       rts
+            
+.ENDPROC
+
+
+;= GETBYTES ====================================================================
+; Extract up to a 32-bit argument from the command line.
+;
+; Parameters:
+;   A = number of bytes.
+;   X = starting index.
+;
+; Returns:
+;   X = index after dword/word/byte.
+;   C = status.
+;
+; Remarks:
+;   This function extracts a dword, word, or byte from the command line. If it
+;   detects an invalid entry, it will clear the carry flag before returning.
+;   Invalid inputs are those that are not in ASCII hexadecimal format, or those
+;   that are longer than 2/4/8 characters for a byte/word/dword. Additionally,
+;   it updates the command line index (X).
+
+.CODE
+
+.PROC getbytes
+
+            cmp     #5                  ; verify bytes < 5
+            bge     invalid
+            
+            asl     A                   ; multiply by 2 to get number of digits
+            tay                         ; Y is our digit counter
+            
+            stz     dword
+            stz     dword+1
+            stz     dword+2
+            stz     dword+3
+            
+            ;- convert ASCII character to hexadecimal --------------------------
+parse:      lda     szCmdLn, X
+            bze     valid               ; check for NUL terminator
+            cmp     #' '
+            beq     valid               ; ignore trailing spaces
+            
+            jsr     isxdigit
+            bcc     invalid
+            
+            jsr     asc2bin
+            
+            ;- shift and OR converted value into dword -------------------------
+            asl     dword
+            rol     dword+1
+            rol     dword+2
+            rol     dword+3
+            asl     dword
+            rol     dword+1
+            rol     dword+2
+            rol     dword+3
+            asl     dword
+            rol     dword+1
+            rol     dword+2
+            rol     dword+3
+            asl     dword
+            rol     dword+1             ; dword <<= 4
+            rol     dword+2
+            rol     dword+3
+            
+            ora     dword               ; dword |= hex digit
+            sta     dword
+            
+            inx
+            
+            dey
+            bpl     parse               ; only convert what was passed
+            
+invalid:    clc                         ; converted more than maximum
+            rts                         ; therefore invalid
+            
+valid:      sec
+            rts
+
+.ENDPROC
+
+
+;= ISXDIGIT ====================================================================
+; Check if ASCII character is a hexadecimal digit.
+;
+; Parameters:
+;   A - ASCII character.
+;
+; Returns:
+;   C - status.
+;
+; Remarks:
+;   This function checks if an ASCII character is between '0'-'9' and
+;   'A'-'F'. It assumes upper case letters. It clears the carry flag if invalid
+;   and sets it if valid.
+
+.CODE
+
+.PROC isxdigit
+
+            cmp     #'0'
+            blt     no                  ; below '0', not a hex digit
+            cmp     #'9'+1
+            blt     yes                 ; between '0'-'9', is a hex digit
+            
+            cmp     #'A'
+            blt     no                  ; below 'A', not a hex digit
+            cmp     #'F'+1
+            blt     yes                 ; between 'A'-'F', is a hex digit
+            
+no:         clc                         ; carry clear for invalid
+            rts
+
+yes:        sec                         ; carry set for valid
+            rts
+
+.ENDPROC
+
+
+;= PRINTBIN ====================================================================
+; Print byte in ASCII binary to the terminal.
+;
+; Parameters:
+;   A - byte.
+;
+; Returns:
+;   none.
+;
+; Remarks:
+;   This function prints an 8-bit byte to the terminal in ASCII binary format.
+
+.CODE
+
+.PROC printbin
+
+            ldx     #8                  ; 8 bits
+loop:       asl     A                   ; shift MSb to C flag
+            pha                         ; save remaining bits
+            
+            lda     #'1'                ; use the carry bit from the shift
+            bcs     print               ; to print 1 or 0
+            
+            dec     A                   ; not a '1', so it's a '0'
+            
+print:      phx                         ; putch destroys X
+            jsr     putch               ; print bit
+            plx                         ; restore X
+            
+            pla                         ; restore remaining bits
+            
+            dex
+            bnz     loop                ; looping for 8 bits
+            
+            rts
+
+.ENDPROC
+
+
+;= PRINTHEX ====================================================================
+; Print byte in ASCII hexadecimal to the terminal.
+;
+; Parameters:
+;   A - byte.
+;
+; Returns:
+;   none.
+;
+; Remarks:
+;   This function prints an 8-bit byte to the terminal in ASCII hexadecimal
+;   format.
+
+.CODE
+
+.PROC printhex
+
+            pha                         ; save the byte
+            
+            lsr     A                   ; byte >> 4
+            lsr     A
+            lsr     A
+            lsr     A                   ; shift upper nibble to print it first
+            cmp     #$0A                ; set carry if A >= $0A
+            blt     @conv0              ; A < $0A?
+            
+            adc     #$66                ; add $67 (convert $0A-$0F to $71-$76)
+            
+@conv0:     eor     #$30                ; convert to ASCII
+            jsr     putch               ; print hex character
+            
+            pla                         ; retrieve saved byte
+            and     #$0F                ; lower nibble
+            cmp     #$0A                ; set carry if A >= $0A
+            blt     @conv1              ; A < $0A?
+            
+            adc     #$66                ; add $67 (convert $0A-$0F to $71-$76)
+            
+@conv1:     eor     #$30                ; convert to ASCII
+            jsr     putch               ; print hex character
+            
+            rts
+
+.ENDPROC
+
+
+;= PRINTREGS ===================================================================
+; Print stored CPU registers.
+;
+; Parameters:
+;   none.
+;
+; Returns:
+;   none.
+;
+; Remarks:
+;   This function prints the stored CPU registers.
+
+.CODE
+
+.PROC printregs
+
+            ldx     #.HIBYTE(szRegHdr)
+            lda     #.LOBYTE(szRegHdr)
+            jsr     cputs
+            
+            ;- program counter -------------------------------------------------
+            lda     wPCreg+1
+            jsr     printhex
+            lda     wPCreg
+            jsr     printhex
+            lda     #' '
+            jsr     putch
+            
+            ;- A, X, Y, S, and P registers -------------------------------------
+            ldx     #0
+loop:       lda     byAreg, X           ; get stored register
+            phx                         ; putch destroys X
+            jsr     printhex            ; print hexadecimal register value
+            
+            lda     #' '
+            jsr     putch
+            
+            plx                         ; restore X
+            inx
+            cpx     #4                  ; only print A, X, Y, and S in hex
+            bne     loop
+            
+            lda     byPreg
+            jsr     printbin            ; print P in binary format
+            
+            lda     #LF
+            jsr     putch
+            
+            rts
+
+.ENDPROC
+
+
+
+;= READLN ======================================================================
+; Read a command line from the terminal.
+;
+; Parameters:
+;   none.
+;
+; Returns:
+;   C = status.
+;
+; Remarks:
+;   Reads a LF terminated input from the terminal. Processes ESC, BS, CTRL-R, 
+;   and LF. If using the py65mon, it will also process CR and CTRL-D. Clears C
+;   if ESC received, and sets C if complete command line read.
+
+.CODE
+
+.PROC readln
+
+            ldx     #0                  ; X = command line index
+getkey:     jsr     getch
+            
+            ;- process key stroke ----------------------------------------------
+            cmp     #ESC
+            beq     esc
+            cmp     #BS
+            beq     bs
+            cmp     #DC2                ; catch CTRL-R for reset
+            beq     reset
+            cmp     #LF
+            beq     lf
+        .IFDEF SIM
+            cmp     #CR
+            beq     lf                  ; interpret CR as LF in py65mon
+            cmp     #EOT
+            beq     eot                 ; catch CTRL-D in py65mon
+        .ENDIF
+                        
+            cpx     #CMDMAX             ; ignore key press if index == max
+            beq     getkey
+            
+            cmp     #' '                ; ignore non-printable characters
+            blt     getkey              ; which are less than ' ' and greater
+            cmp     #'~'+1              ; than '~'
+            bge     getkey
+
+            phx                         ; putch destroys X
+            jsr     putch               ; print the received character
+            plx                         ; restore X
+            
+            cmp     #'a'
+            blt     storekey            ; store character if not lowercase
+            cmp     #'z'+1
+            bge     storekey
+            
+            and     #%11011111          ; convert to uppercase
+            
+            ;- save key to buffer ----------------------------------------------
+storekey:   sta     szCmdLn, X          ; save key to command line buffer
+            inx                         ; update command line index
+            bra     getkey              ; get more keys
+            
+            ;- escape handler --------------------------------------------------
+esc:        ldx     #.HIBYTE(szClrLn)
+            lda     #.LOBYTE(szClrLn)
+            jsr     cputs               ; clear the current line
+            
+            clc                         ; C cleared signals ESC
+            rts                         ; start over
+            
+            ;- backspace handler -----------------------------------------------
+bs:         cpx     #0                  ; if X is zero, then nothing entered
+            beq     getkey              ; ignore if empty, get more keys
+            
+            dex                         ; walk back the command line index
+            
+            phx                         ; putch destroys X
+            jsr     putch               ; process by printing a BS, a space, and
+            lda     #' '                ; another BS
+            jsr     putch
+            lda     #BS
+            jsr     putch
+            plx                         ; get back X
+            
+            bra     getkey              ; get more keys
+            
+            ;- CTRL-R handler --------------------------------------------------
+reset:      jmp     rst                 ; reset the system!
+            
+            ;- line feed handler -----------------------------------------------
+lf:         cpx     #0                  ; if X is zero, then nothing entered
+            beq     getkey              ; ignore if empty, get more keys
+            
+            stz     szCmdLn, X          ; add NUL terminator
+            
+            lda     #LF
+            jsr     putch               ; echo the LF character
+            
+            sec                         ; carry flag set signals complete
+            rts
+            
+            ;- CTRL-D handler **py65mon only** ---------------------------------
+        .IFDEF SIM
+eot:        brk                         ; dump into the py65mon monitor
+            .BYTE $00
+        .ENDIF
+
+.ENDPROC
+
+
+;= TRIMSPACE =================================================================== 
+; Trim spaces from command line.
+;
+; Parameters:
+;   X = starting index.
+;
+; Returns:
+;   X = first non-space index.
+;
+; Remarks:
+;   This function finds the first non-space index in the command line, starting
+;   with the passed index and working to the right. It returns the index of the
+;   first non-space character found from the starting point.
+
+.CODE
+
+.PROC trimspace
+
+            lda     szCmdLn, X          ; get command line character
+            cmp     #' '
+            bne     exit                ; if it's not a ' ', we are done
+            
+            inx
+            bra     trimspace           ; keep getting spaces
+            
+exit:       rts
+
+.ENDPROC
+
+
+;===============================================================================
+; READ ONLY DATA
+;===============================================================================
+
+;= COMMAND JUMP TABLE ==========================================================
+
+.RODATA
+
+apfnCmds:   .WORD help                  ; ?
+            .WORD invalid               ; @
+            .WORD invalid               ; A
+            .WORD invalid               ; B
+            .WORD invalid               ; C
+            .WORD dump                  ; D
+            .WORD enter                 ; E
+            .WORD fill                  ; F
+            .WORD invalid               ; G
+            .WORD invalid               ; H
+            .WORD invalid               ; I
+            .WORD jump                  ; J
+            .WORD invalid               ; K
+            .WORD invalid               ; L
+            .WORD invalid               ; M
+            .WORD invalid               ; N
+            .WORD invalid               ; O
+            .WORD invalid               ; P
+            .WORD invalid               ; Q
+            .WORD regs                  ; R
+            .WORD stack                 ; S
+            .WORD invalid               ; T
+            .WORD invalid               ; U
+            .WORD invalid               ; V
+            .WORD invalid               ; W
+            .WORD invalid               ; X
+            .WORD invalid               ; Y
+            .WORD invalid               ; Z
+
+            
+;= VT100 COMMANDS ==============================================================
+
+.RODATA
+
+szClrLn:    .BYTE ESC, "[2K", CR, NUL   ; clear entire line and reset cursor
+
+
+;= STRINGS =====================================================================
+
+.RODATA
+
+szHelp:     .BYTE "dump",  HT, HT,  "D [address]", LF
+            .BYTE "enter", HT, HT,  "E address list", LF
+            .BYTE "fill",  HT, HT,  "F range byte", LF
+            .BYTE "help",  HT, HT,  "?", LF
+            .BYTE "jump",  HT, HT,  "J [address]", LF
+        .IFDEF SIM
+            .BYTE "py65mon", HT, HT, "^D", LF
+        .ENDIF
+            .BYTE "register",  HT,  "R [register byte]", LF
+            .BYTE "reset", HT, HT,  "^R", LF
+            .BYTE "stack", HT, HT,  "S", LF
+            .BYTE NUL
+
+szRegHdr:   .BYTE " PC  A  X  Y  S  NV-BDIZC", LF, NUL
+
+
+;===============================================================================
+; UNINITIALIZED DATA
+;===============================================================================
+
+.BSS
+
+szCmdLn:    .RES CMDMAX+1               ; command line buffer, add room for NUL
+
+byte:
+word:
+dword:      .RES 4                      ; used in getbyte/getword/getdword
+
+
+;===============================================================================
+
+.END
