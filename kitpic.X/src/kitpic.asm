@@ -205,7 +205,7 @@ reg_loop:   tblrd   *+                      ; read register LSB from ROM
 
 
 ;===============================================================================
-; LOAD BIOS
+; LOAD IMAGE
 ;===============================================================================
 
 load_bios:  movlw   upper abyBIOS           ; TBLPTR points to BIOS data
@@ -216,15 +216,13 @@ load_bios:  movlw   upper abyBIOS           ; TBLPTR points to BIOS data
             movwf   TBLPTRL, A     
             
             ;- setup buses for transfer ----------------------------------------
-            movlw   low BIOS_ADDR           ; place BIOS starting addr. on bus
-            movwf   AB_LAT_L, A
-            movlw   high BIOS_ADDR
-            movwf   AB_LAT_H, A
+            clrf    AB_LAT_L, A             ; start at address 0x0000
+            clrf    AB_LAT_H, A
             
             setf    DB_TRIS, A              ; release data bus to RAM
             bcf     PERIF_LAT, nRAM, A      ; select RAM
             
-            ;- copy BIOS data from ROM to external RAM -------------------------
+            ;- copy image data from ROM to external RAM ------------------------
 load_loop:  tblrd   *+                      ; (8R) read BIOS data
             movff   TABLAT, DB_LAT          ; (10R) place on data bus
             
@@ -238,10 +236,10 @@ load_loop:  tblrd   *+                      ; (8R) read BIOS data
             bsf     PERIF_LAT, RnW, A       ; (5W) set read mode
             setf    DB_TRIS, A              ; (1R) release data bus to RAM
             
-            incf    AB_LAT_L, F, A          ; (2R) increment address
+            incf    AB_LAT_L, F, A          ; (2R) increment address LSB
             movlw   0x00                    ; (3R) 16-bit addition
-            addwfc  AB_LAT_H, F, A          ; (4R)
-            bnz     load_loop               ; (6R) branch if address > 0x0000
+            addwfc  AB_LAT_H, F, A          ; (4R) increment address MSB
+            bnc     load_loop               ; (6R) branch if address < 0xFFFF
             
             bsf     PERIF_LAT, nRAM, A      ; deselect RAM
 
@@ -328,7 +326,7 @@ ram_access: nop                             ; (7L) timing adjustment
 
 
 ;===============================================================================
-; UNINITIALIZED RAM
+; UNINITIALIZED INTERNAL RAM
 ;===============================================================================
 
             UDATA
@@ -355,7 +353,7 @@ awRegTblROM dw      RC1REG
 
 
 ;===============================================================================
-; BIOS ROM IMAGE
+; EXTERNAL SRAM IMAGE
 ;===============================================================================
 
 BIOS        CODE_PACK

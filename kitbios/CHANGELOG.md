@@ -6,5 +6,8 @@ and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Changed
+- KitBIOS now assembles into a 64 KiB image to be loaded into the entire RAM
+space of the Kit-2.
 ### Added
 - Initial commit.

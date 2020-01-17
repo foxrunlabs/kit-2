@@ -62,8 +62,6 @@
 ;===============================================================================\n\
 \n\
 \n\
-BIOS_ADDR equ 0x%04X\n\
-\n\
 BIOS_DATA   macro\n\
 \n"
 
@@ -73,7 +71,6 @@ BIOS_DATA   macro\n\
 int main(int argc, char *argv[])
 {
     uint8_t  *buf;
-    uint16_t start;
     int      i;
     FILE     *file_in;
     FILE     *file_out;
@@ -101,18 +98,10 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
     
-    /* input file must be greater than 256 bytes and less than 64768 bytes */
-    if((st.st_size < 256) || (st.st_size > 64768))
+    /* input file must be 65536 bytes */
+    if(st.st_size != 65536)
     {
-        fprintf(stderr, "%s: %s: size must be between 256 and 64768 bytes\n", argv[0], argv[1]);
-        fclose(file_in);
-        return EXIT_FAILURE;
-    }
-    
-    /* input file must be a multiple of 256 bytes */
-    if(st.st_size % 256)
-    {
-        fprintf(stderr, "%s: %s: size must be a multiple of 256\n", argv[0], argv[1]);
+        fprintf(stderr, "%s: %s: size must be 65536 bytes\n", argv[0], argv[1]);
         fclose(file_in);
         return EXIT_FAILURE;
     }
@@ -134,11 +123,11 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
     
+    /* read input file data */
     fread(buf, sizeof(uint8_t), (size_t)st.st_size, file_in);
     
-    /* compute starting address of BIOS in Kit-2 RAM space */
-    start = (uint16_t)(0x10000 - st.st_size);
-    fprintf(file_out, FILEHEADER, start);
+    /* print file header to output file */
+    fprintf(file_out, FILEHEADER);
     
     /* convert individual bytes to hexadecimal format */
     for(i = 0; i < st.st_size; i += 8)

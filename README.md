@@ -12,10 +12,11 @@ The Kit-2 is an 8-bit computer based on the 65C02 CPU. Specifications include:
 
 ## Boot Sequence
 The Kit-2 is initially held in reset by the PIC upon power-up or hard reset.
-During this reset period, the PIC loads the SRAM with the BIOS. Once this is
-complete, the PIC releases the bus and changes roles to a peripheral controller.
-The BIOS initializes the peripherals and searches for a valid KitOS file on the
-SD card. If KitOS is not found, then the BIOS will launch the ROM monitor.
+During this reset period, the PIC loads the SRAM with a full 64 KiB image. Once
+this is complete, the PIC releases the bus and changes roles to a peripheral
+controller. The BIOS initializes the peripherals and searches for a valid KitOS
+file on the SD card. If KitOS is not found, then the BIOS will launch the ROM
+monitor.
 
 ## Getting Started
 The firmware and software can be built by issuing the ```make``` command in the
