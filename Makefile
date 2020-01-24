@@ -35,22 +35,15 @@ BIN2INC = $(PREFIX)/bin2inc/bin/bin2inc
 MAKE    = make
 
 .PHONY: all
-all : pic
-
-.PHONY: bin2inc
-bin2inc :
-	@echo "[${GREEN}Building bin2inc${NOCOLOR}]"
-	$(MAKE) -C bin2inc
+all : bios pic
 
 .PHONY: bios
-bios : bin2inc
+bios :
 	@echo "[${GREEN}Building KitBIOS${NOCOLOR}]"
 	$(MAKE) -C kitbios
-	@echo "[${GREEN}Converting .BIN to .INC${NOCOLOR}]"
-	$(BIN2INC) $(BIOSBIN) $(BIOSINC)
 
 .PHONY: pic
-pic : bios
+pic :
 	@echo "[${GREEN}Building KitPIC${NOCOLOR}]"
 	$(MAKE) -C kitpic.X
 
@@ -61,7 +54,7 @@ sim :
 
 .PHONY: clean
 clean :
-	@echo "[${GREEN}Cleaning${NOCOLOR}]"
-	$(MAKE) -C bin2inc $@
+	@echo "[${GREEN}Cleaning KitBIOS${NOCOLOR}]"
 	$(MAKE) -C kitbios $@
+	@echo "[${GREEN}Cleaning KitPIC${NOCOLOR}]"
 	$(MAKE) -C kitpic.X $@
