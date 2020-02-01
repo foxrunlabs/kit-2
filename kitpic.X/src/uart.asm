@@ -33,9 +33,6 @@
 ; IMPORTS/EXPORTS
 ;===============================================================================
 
-            extern  reg8A, reg16A, reg32A
-            extern  reg8B, reg16B, reg32B
-            
             global  uart_write
             global  uart_puts
 

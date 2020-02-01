@@ -41,6 +41,7 @@ SDC_CMD58  equ 0x7A                 ; READ_OCR
 
 ;= RESPONSES ===================================================================
 
+;- R1 response bits ------------------------------------------------------------
 IDLE    equ 0x00                    ; idle state
 ERASE   equ 0x01                    ; erase reset
 ILLEGAL equ 0x02                    ; illegal command
@@ -49,5 +50,6 @@ SEQ     equ 0x04                    ; erase sequence error
 ADDRESS equ 0x05                    ; address error
 PARAM   equ 0x06                    ; parameter error
 
+;- read/write block responses --------------------------------------------------
 ACCEPT  equ 0x05                    ; data accepted
 DATATKN equ 0xFE                    ; data packet token

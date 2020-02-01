@@ -39,12 +39,17 @@
 
             global  reg8A, reg16A, reg32A
             global  reg8B, reg16B, reg32B
+            global  reg8C, reg16C, reg32C
+            global  printhex
             
             extern  sdc_init
-            extern  sdc_cmd
             
             extern  uart_write
             extern  uart_puts
+            
+            extern  fat16_init
+            extern  find_kitos
+            extern  load_kitos
 
 
 ;===============================================================================
@@ -63,6 +68,7 @@ B115200 equ .138                            ; 115,108 bps (0.08% error)
 ;= CONTROL CHARACTERS ==========================================================
 
 NUL equ 0x00
+BEL equ 0x07
 LF  equ 0x0A
 ESC equ 0x1B
 
@@ -158,6 +164,9 @@ main:       ;- disable unused peripherals --------------------------------------
             clrf    AB_TRIS_L, A            ; take address and data buses
             clrf    AB_TRIS_H, A
             clrf    DB_TRIS, A
+            
+            ;- setup software stack pointer ------------------------------------
+            lfsr    FSR2, abyStack + 0xFF   ; FSR2->top of stack
 
 
 ;===============================================================================
@@ -225,16 +234,46 @@ banner:     puts    szClrScr
 
 
 ;===============================================================================
-; INITIALIZE SD CARD
+; LOAD KITOS
 ;===============================================================================
-
-init_sdc:   call    sdc_init
             
-            tstfsz  WREG, A
+            ;- initialize SD card ----------------------------------------------
+load_os:    call    sdc_init                ; initialize SD card
+            tstfsz  WREG, A                 ; zero equals success
+            bra     load_error              ; branch if fail to initialize
+            
+            ;- initialize FAT16 volume -----------------------------------------
+            call    fat16_init              ; initialize FAT16 volume
+            tstfsz  WREG, A                 ; zero equals success
+            bra     load_error              ; branch if fail to initialize
+            
+            ;- find KitOS on FAT16 volume --------------------------------------
+            call    find_kitos              ; find KitOS on the FAT16 volume
+            movf    reg16A+1, W, A          ; return value of zero is an error
+            bnz     check_size
+            movf    reg16A, W, A
+            bz      load_error              ; branch if KitOS not found
+            
+check_size: movf    reg32B, W, A            ; verify file size is 65536 bytes
+            bnz     load_error              ; branch if not 0x00
+            movf    reg32B+1, W, A
+            bnz     load_error              ; branch if not 0x00
+            movlw   1
+            cpfseq  reg32B+2, A
+            bra     load_error              ; branch if not 0x01
+            movf    reg32B+3, W, A
+            bz      load_ram                ; branch if not 0x00
+            
+            ;- KitOS loading error ---------------------------------------------
+load_error: puts    szLoadErr               ; loading error
             bra     $
             
-            puts    szSDC
-            bra     $
+            ;- load external RAM with KitOS ------------------------------------
+load_ram:   puts    szLoadOS
+            
+            call    load_kitos              ; load the external RAM with KitOS
+            tstfsz  WREG, A                 ; zero equals success
+            bra     load_error
 
 
 ;===============================================================================
@@ -265,50 +304,11 @@ reg_loop:   tblrd   *+                      ; read register LSB from ROM
 
 
 ;===============================================================================
-; LOAD IMAGE
-;===============================================================================
-
-;load_bios:  movlw   upper abyBIOS           ; TBLPTR points to BIOS data
-;            movwf   TBLPTRU, A     
-;            movlw   high abyBIOS
-;            movwf   TBLPTRH, A     
-;            movlw   low abyBIOS
-;            movwf   TBLPTRL, A     
-            
-            ;- setup buses for transfer ----------------------------------------
-;            clrf    AB_LAT_L, A             ; start at address 0x0000
-;            clrf    AB_LAT_H, A
-            
-;            setf    DB_TRIS, A              ; release data bus to RAM
-;            bcf     PERIF_LAT, nRAM, A      ; select RAM
-            
-            ;- copy image data from ROM to external RAM ------------------------
-;load_loop:  tblrd   *+                      ; (8R) read BIOS data
-;            movff   TABLAT, DB_LAT          ; (10R) place on data bus
-;            
-;            bcf     PERIF_LAT, RnW, A       ; (11R) set write mode
-;            clrf    DB_TRIS, A              ; (1W) take control of data bus
-            
-;            nop                             ; (2W) timing adjustment
-;            nop                             ; (3W) timing adjustment
-;            nop                             ; (4W) timing adjustment
-            
-;            bsf     PERIF_LAT, RnW, A       ; (5W) set read mode
-;            setf    DB_TRIS, A              ; (1R) release data bus to RAM
-            
-;            incf    AB_LAT_L, F, A          ; (2R) increment address LSB
-;            movlw   0x00                    ; (3R) 16-bit addition
-;            addwfc  AB_LAT_H, F, A          ; (4R) increment address MSB
-;            bnc     load_loop               ; (6R) branch if address < 0xFFFF
-            
-;            bsf     PERIF_LAT, nRAM, A      ; deselect RAM
-
-
-;===============================================================================
 ; RESET 65C02
 ;===============================================================================
 
-reset_6502: setf    AB_TRIS_L, A            ; release address bus to 65C02
+reset_6502: setf    DB_TRIS, A              ; release data bus to 65C02
+            setf    AB_TRIS_L, A            ; release address bus to 65C02
             setf    AB_TRIS_H, A     
             bsf     PERIF_TRIS, RnW, A      ; release RnW pin to 65C02
             bsf     CTRL_LAT, BE, A         ; 65C02 now controls the buses
@@ -386,37 +386,103 @@ ram_access: nop                             ; (7L) timing adjustment
 
 
 ;===============================================================================
+; HELPER FUNCTIONS
+;===============================================================================
+
+;= PRINTHEX ====================================================================
+; Print byte in ASCII hexadecimal to the terminal.
+;
+; Parameters:
+;   W - byte.
+;
+; Returns:
+;   none.
+;
+; Remarks:
+;   This function prints an 8-bit byte to the terminal in ASCII hexadecimal
+;   format.
+
+printhex:   movwf   reg8A, A
+            
+            swapf   WREG, W, A
+            movwf   reg8B, A
+            
+            movlw   0x0F
+            andwf   reg8B, F, A
+            
+            movlw   0x0A
+            cpfslt  reg8B, A
+            bra     notless0
+            
+conv0:      movlw   0x30
+            xorwf   reg8B, W, A
+            call    uart_write
+            
+            movlw   0x0F
+            andwf   reg8A, F, A
+            
+            movlw   0x0A
+            cpfslt  reg8A, A
+            bra     notless1
+            
+conv1:      movlw   0x30
+            xorwf   reg8A, W, A
+            call    uart_write
+            
+            return
+            
+notless0:   movlw   0x67
+            addwf   reg8B, F, A
+            bra     conv0
+            
+notless1:   movlw   0x67
+            addwf   reg8A, F, A
+            bra     conv1
+
+
+;===============================================================================
 ; UNINITIALIZED INTERNAL RAM
 ;===============================================================================
 
-            UDATA
+BSS         UDATA
 
 awRegTable: res     2 * 8                   ; 8 peripheral register addresses
 byDummyReg: res     2                       ; dummy register for unused regs
+
+
+STACK       UDATA
+
+abyStack    res     .256
 
 
 ;===============================================================================
 ; UNINITIALIZED INTERNAL ACCESS RAM
 ;===============================================================================
 
-            UDATA_ACS
+BSS_ACS     UDATA_ACS
 
 ;= PSEUDO REGISTERS ============================================================
 
-reg8A
-reg16A
+reg8A:
+reg16A:
 reg32A:     res     4                       ; register A
 
 reg8B:
 reg16B:
 reg32B:     res     4                       ; register B
 
+reg8C:
+reg16C:
+reg32C:     res     4                       ; register C
+
 
 ;===============================================================================
-; REGISTER TABLE ROM
+; READ ONLY DATA - PROGRAM ROM
 ;===============================================================================
 
-REG_TABLE   CODE_PACK
+RODATA      CODE_PACK
+
+;= REGISTER TABLE ==============================================================
 
             ;- device 0 - EUSART -----------------------------------------------
 awRegTblROM dw      RC1REG
@@ -429,11 +495,7 @@ awRegTblROM dw      RC1REG
             dw      byDummyReg
 
 
-;===============================================================================
-; STRING DATA
-;===============================================================================
-
-STRINGS     CODE_PACK
+;= STRINGS =====================================================================
 
 szClrScr:   db      ESC, "[2J"            ; clear terminal
             db      ESC, "[H", NUL        ; reset cursor
@@ -441,7 +503,9 @@ szClrScr:   db      ESC, "[2J"            ; clear terminal
 szBanner:   db      "KitLoad ", VERSION, LF
             db      "Copyright 2020 Ryan Clarke", LF, LF, NUL
             
-szSDC:      db      "SD Card Found", LF, NUL
+szLoadErr:  db      BEL, "Unable to Load KitOS", LF, NUL
+
+szLoadOS:   db      "Loading KitOS", NUL
 
 
 ;===============================================================================

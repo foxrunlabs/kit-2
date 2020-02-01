@@ -8,10 +8,12 @@
       <itemPath>src/config.inc</itemPath>
       <itemPath>src/sdcard.inc</itemPath>
       <itemPath>src/spi.inc</itemPath>
+      <itemPath>src/fat16.inc</itemPath>
     </logicalFolder>
     <logicalFolder name="LinkerScript"
                    displayName="Linker Files"
                    projectFiles="true">
+      <itemPath>18f47k40_kit2.lkr</itemPath>
     </logicalFolder>
     <logicalFolder name="SourceFiles"
                    displayName="Source Files"
@@ -19,6 +21,7 @@
       <itemPath>src/uart.asm</itemPath>
       <itemPath>src/sdcard.asm</itemPath>
       <itemPath>src/main.asm</itemPath>
+      <itemPath>src/fat16.asm</itemPath>
     </logicalFolder>
     <logicalFolder name="ExternalFiles"
                    displayName="Important Files"
