@@ -1,0 +1,4 @@
+(sym_lib_table
+	(version 7)
+	(lib (name "kit2-cache") (type "Legacy") (uri "/Users/ryan/FoxRunLabs/Projects/kit-2/doc/schematic/kit2-cache.lib") (options "") (descr "Legacy project cache library"))
+)
