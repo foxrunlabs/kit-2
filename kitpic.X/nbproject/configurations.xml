@@ -4,17 +4,24 @@
     <logicalFolder name="HeaderFiles"
                    displayName="Header Files"
                    projectFiles="true">
-      <itemPath>src/kitbios.inc</itemPath>
+      <itemPath>src/kitpic.inc</itemPath>
       <itemPath>src/config.inc</itemPath>
+      <itemPath>src/sdcard.inc</itemPath>
+      <itemPath>src/spi.inc</itemPath>
+      <itemPath>src/fat16.inc</itemPath>
     </logicalFolder>
     <logicalFolder name="LinkerScript"
                    displayName="Linker Files"
                    projectFiles="true">
+      <itemPath>18f47k40_kit2.lkr</itemPath>
     </logicalFolder>
     <logicalFolder name="SourceFiles"
                    displayName="Source Files"
                    projectFiles="true">
-      <itemPath>src/kitpic.asm</itemPath>
+      <itemPath>src/uart.asm</itemPath>
+      <itemPath>src/sdcard.asm</itemPath>
+      <itemPath>src/main.asm</itemPath>
+      <itemPath>src/fat16.asm</itemPath>
     </logicalFolder>
     <logicalFolder name="ExternalFiles"
                    displayName="Important Files"
@@ -33,7 +40,7 @@
         <targetDevice>PIC18F47K40</targetDevice>
         <targetHeader></targetHeader>
         <targetPluginBoard></targetPluginBoard>
-        <platformTool>Simulator</platformTool>
+        <platformTool>PICkit3PlatformTool</platformTool>
         <languageToolchain>MPASMWIN</languageToolchain>
         <languageToolchainVersion>5.86</languageToolchainVersion>
         <platform>4</platform>
@@ -50,7 +57,7 @@
         </archiverTool>
         <loading>
           <useAlternateLoadableFile>false</useAlternateLoadableFile>
-          <parseOnProdLoad>false</parseOnProdLoad>
+          <parseOnProdLoad>true</parseOnProdLoad>
           <alternateLoadableFile></alternateLoadableFile>
         </loading>
         <subordinates>
@@ -101,7 +108,7 @@
                   value="${memories.instruction.ram.ranges}"/>
         <property key="memories.programmemory" value="true"/>
         <property key="memories.programmemory.ranges" value="0-1ffff"/>
-        <property key="poweroptions.powerenable" value="false"/>
+        <property key="poweroptions.powerenable" value="true"/>
         <property key="programmertogo.imagename" value=""/>
         <property key="programoptions.donoteraseauxmem" value="false"/>
         <property key="programoptions.eraseb4program" value="true"/>
@@ -116,9 +123,9 @@
         <property key="programoptions.preserveuserid" value="false"/>
         <property key="programoptions.programcalmem" value="false"/>
         <property key="programoptions.programuserotp" value="false"/>
-        <property key="programoptions.testmodeentrymethod" value="VDDFirst"/>
+        <property key="programoptions.testmodeentrymethod" value="VPPFirst"/>
         <property key="programoptions.usehighvoltageonmclr" value="false"/>
-        <property key="programoptions.uselvpprogramming" value="false"/>
+        <property key="programoptions.uselvpprogramming" value="true"/>
         <property key="voltagevalue" value="5.0"/>
       </PICkit3PlatformTool>
       <Simulator>

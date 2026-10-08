@@ -22,56 +22,72 @@
 ; Author    : Ryan Clarke
 ; E-mail    : kj6msg@icloud.com
 ;-------------------------------------------------------------------------------
-; Purpose   : Source code for the KitPIC loader and peripheral controller.
+; Purpose   : Source code for the KitPIC RAM loader and peripheral controller.
 ;===============================================================================
 
 
 #include "p18f47k40.inc"
-
 #include "config.inc"
-#include "kitbios.inc"
+#include "kitpic.inc"
+#include "sdcard.inc"
+#include "spi.inc"
 
 
 ;===============================================================================
-; PIN DEFINITIONS
+; IMPORTS/EXPORTS
 ;===============================================================================
 
-;- control bus -----------------------------------------------------------------
-#define CTRL_PORT PORTE
-#define CTRL_LAT  LATE
-#define CTRL_TRIS TRISE
+            global  reg8A, reg16A, reg32A
+            global  reg8B, reg16B, reg32B
+            global  reg8C, reg16C, reg32C
+            global  printhex
+            
+            extern  sdc_init
+            
+            extern  uart_write
+            extern  uart_puts
+            
+            extern  fat16_init
+            extern  find_kitos
+            extern  load_kitos
 
-#define nRST RE0                            ; 65C02 reset
-#define PH2  RE1                            ; 65C02 clock
-#define BE   RE2                            ; 65C02 bus enable
 
-;- address bus -----------------------------------------------------------------
-#define AB_PORT_L PORTC                     ; AB0-AB7
-#define AB_LAT_L  LATC
-#define AB_TRIS_L TRISC
+;===============================================================================
+; CONSTANT VALUES
+;===============================================================================
 
-#define AB_PORT_H PORTD                     ; AB8-AB9
-#define AB_LAT_H  LATD
-#define AB_TRIS_H TRISD
+#define VERSION "0.1.0"
 
-;- data bus --------------------------------------------------------------------
-#define DB_PORT PORTA                       ; DB0-DB7
-#define DB_LAT  LATA
-#define DB_TRIS TRISA
 
-;- peripheral bus --------------------------------------------------------------
-#define PERIF_PORT PORTB
-#define PERIF_LAT  LATB
-#define PERIF_TRIS TRISB
+;= UART BAUD RATES =============================================================
 
-#define nSDC RB0                            ; SD card slave select
-#define MOSI RB1                            ; SD card data input
-#define MISO RB2                            ; SD card data output
-#define SCLK RB3                            ; SD card clock
-#define RX1  RB4                            ; FTDI USB-to-Serial -> PIC
-#define TX1  RB5                            ; PIC -> FTDI USB-to-Serial
-#define nRAM RB6                            ; RAM chip select
-#define RnW  RB7                            ; R/W signal
+B57600  equ .277                            ; 57,554 bps (0.08% error)
+B115200 equ .138                            ; 115,108 bps (0.08% error)
+
+
+;= CONTROL CHARACTERS ==========================================================
+
+NUL equ 0x00
+BEL equ 0x07
+LF  equ 0x0A
+ESC equ 0x1B
+
+
+;===============================================================================
+; MACROS
+;===============================================================================
+
+puts        MACRO   string
+            
+            movlw   upper string
+            movwf   TBLPTRU, A
+            movlw   high string
+            movwf   TBLPTRH, A
+            movlw   low string
+            movwf   TBLPTRL, A
+            call    uart_puts
+            
+            ENDM
 
 
 ;===============================================================================
@@ -80,7 +96,8 @@
 
 RESET_VEC   CODE    0x0000
 
-            goto    start
+start:      bsf     NVMCON1, NVMREG1, A     ; errata fix for NVM read
+            goto    main
 
 
 ;===============================================================================
@@ -102,21 +119,19 @@ ISRL_VEC    CODE    0x0018
 
 
 ;===============================================================================
-; STARTUP
+; MAIN PROGRAM
 ;===============================================================================
 
             CODE
-
-start:      bsf     NVMCON1, NVMREG1, A     ; errata fix for NVM read
-            
-            ;- disable unused peripherals --------------------------------------
+            ; TODO: pullup resistors and open-drain for control pins
+main:       ;- disable unused peripherals --------------------------------------
             banksel PMD0
             movlw   ~((1 << SYSCMD) | (1 << NVMMD))
             movwf   PMD0
             setf    PMD1
             setf    PMD2
             setf    PMD3
-            movlw   ~(1 << UART1MD)
+            movlw   ~((1 << UART1MD) | (1 << MSSP1MD))
             movwf   PMD4
             setf    PMD5
             
@@ -129,17 +144,17 @@ start:      bsf     NVMCON1, NVMREG1, A     ; errata fix for NVM read
             clrf    ANSELE
             
             ;- setup control bus -----------------------------------------------
-            movlw   1 << PH2                ; hold BE and nRST low, PH2 high
-            movwf   CTRL_LAT, A
+            movlw   1 << PH2                ; hold 6502 in reset, idle PH2 high,
+            movwf   CTRL_LAT, A             ; and take control of the buses
             
             movlw   ~((1 << nRST) | (1 << BE) | (1 << PH2))
             movwf   CTRL_TRIS, A            ; nRST, BE, and PH2 as outputs
             
             ;- setup peripheral bus --------------------------------------------
-            setf    PERIF_LAT, A            ; hold everything high
+            setf    PERIF_LAT, A            ; set all perifs high
             
-            movlw   (1 << MISO) | (1 << RX1)
-            movwf   PERIF_TRIS, A           ; MISO and RX1 as inputs
+            movlw   (1 << SDI1) | (1 << RX1)
+            movwf   PERIF_TRIS, A           ; SDI1 and RX1 as inputs
             
             ;- setup address and data buses ------------------------------------
             clrf    AB_LAT_L, A             ; drive address and data buses low
@@ -149,13 +164,19 @@ start:      bsf     NVMCON1, NVMREG1, A     ; errata fix for NVM read
             clrf    AB_TRIS_L, A            ; take address and data buses
             clrf    AB_TRIS_H, A
             clrf    DB_TRIS, A
+            
+            ;- setup software stack pointer ------------------------------------
+            lfsr    FSR2, abyStack + 0xFF   ; FSR2->top of stack
 
 
 ;===============================================================================
-; SETUP PERIPHERALS
+; PERIPHERAL SETUP
 ;===============================================================================
 
-uart_setup: movlw   b'00001100'             ; RX1 on RB4
+;= UART ========================================================================
+
+uart_setup: ;- set peripheral pins ---------------------------------------------
+            movlw   b'00001100'             ; RX1 on RB4
             banksel RX1PPS
             movwf   RX1PPS
             
@@ -166,15 +187,93 @@ uart_setup: movlw   b'00001100'             ; RX1 on RB4
             ;- set baud rate ---------------------------------------------------
             bsf     TX1STA, BRGH, A         ; high baud rate
             bsf     BAUD1CON, BRG16, A      ; 16-bit baud rate generator
-            movlw   low .277                ; 57554 bps for a -0.08% error
+            movlw   low B115200
             movwf   SP1BRGL, A
-            movlw   high .277               ; computed 64 MHz Fosc
+            movlw   high B115200            ; computed for 64 MHz Fosc
             movwf   SP1BRGH, A     
             
             ;- enable UART -----------------------------------------------------
             bsf     TX1STA, TXEN, A         ; transmitter enabled
             bsf     RC1STA, CREN, A         ; receiver enabled
             bsf     RC1STA, SPEN, A         ; serial port enabled
+
+
+;= SPI =========================================================================
+
+spi_setup:  ;- set peripheral pins ---------------------------------------------
+            movlw   b'00001010'             ; SDI1 on RB2
+            banksel SSP1DATPPS
+            movwf   SSP1DATPPS
+            
+            movlw   0x10                    ; SDO1 on RB1
+            banksel RB1PPS
+            movwf   RB1PPS
+            
+            movlw   0x0F                    ; SCK1 on RB3
+            banksel RB3PPS
+            movwf   RB3PPS
+            
+            ;- set SCK1 frequency ----------------------------------------------
+            movlw   S100K                   ; SCK1 is 100 kHz
+            movwf   SSP1ADD, A
+            
+            ;- setup SPI mode 0 ------------------------------------------------
+            movlw   b'11000000'             ; data sampled at middle of output
+            movwf   SSP1STAT, A             ; transmit on SCK high to low
+            
+            movlw   b'00101010'             ; SPI enabled, SCK idle low
+            movwf   SSP1CON1, A             ; SCK determined by SSP1ADD
+
+
+;===============================================================================
+; PRINT BANNER
+;===============================================================================
+
+banner:     puts    szClrScr
+            puts    szBanner
+
+
+;===============================================================================
+; LOAD KITOS
+;===============================================================================
+            
+            ;- initialize SD card ----------------------------------------------
+load_os:    call    sdc_init                ; initialize SD card
+            tstfsz  WREG, A                 ; zero equals success
+            bra     load_error              ; branch if fail to initialize
+            
+            ;- initialize FAT16 volume -----------------------------------------
+            call    fat16_init              ; initialize FAT16 volume
+            tstfsz  WREG, A                 ; zero equals success
+            bra     load_error              ; branch if fail to initialize
+            
+            ;- find KitOS on FAT16 volume --------------------------------------
+            call    find_kitos              ; find KitOS on the FAT16 volume
+            movf    reg16A+1, W, A          ; return value of zero is an error
+            bnz     check_size
+            movf    reg16A, W, A
+            bz      load_error              ; branch if KitOS not found
+            
+check_size: movf    reg32B, W, A            ; verify file size is 65536 bytes
+            bnz     load_error              ; branch if not 0x00
+            movf    reg32B+1, W, A
+            bnz     load_error              ; branch if not 0x00
+            movlw   1
+            cpfseq  reg32B+2, A
+            bra     load_error              ; branch if not 0x01
+            movf    reg32B+3, W, A
+            bz      load_ram                ; branch if not 0x00
+            
+            ;- KitOS loading error ---------------------------------------------
+load_error: puts    szLoadErr               ; loading error
+            bra     $
+            
+            ;- load external RAM with KitOS ------------------------------------
+load_ram:   puts    szLoadOS
+            
+            call    load_kitos              ; load the external RAM with KitOS
+            tstfsz  WREG, A                 ; zero equals success
+            bra     load_error
 
 
 ;===============================================================================
@@ -205,50 +304,11 @@ reg_loop:   tblrd   *+                      ; read register LSB from ROM
 
 
 ;===============================================================================
-; LOAD IMAGE
-;===============================================================================
-
-load_bios:  movlw   upper abyBIOS           ; TBLPTR points to BIOS data
-            movwf   TBLPTRU, A     
-            movlw   high abyBIOS
-            movwf   TBLPTRH, A     
-            movlw   low abyBIOS
-            movwf   TBLPTRL, A     
-            
-            ;- setup buses for transfer ----------------------------------------
-            clrf    AB_LAT_L, A             ; start at address 0x0000
-            clrf    AB_LAT_H, A
-            
-            setf    DB_TRIS, A              ; release data bus to RAM
-            bcf     PERIF_LAT, nRAM, A      ; select RAM
-            
-            ;- copy image data from ROM to external RAM ------------------------
-load_loop:  tblrd   *+                      ; (8R) read BIOS data
-            movff   TABLAT, DB_LAT          ; (10R) place on data bus
-            
-            bcf     PERIF_LAT, RnW, A       ; (11R) set write mode
-            clrf    DB_TRIS, A              ; (1W) take control of data bus
-            
-            nop                             ; (2W) timing adjustment
-            nop                             ; (3W) timing adjustment
-            nop                             ; (4W) timing adjustment
-            
-            bsf     PERIF_LAT, RnW, A       ; (5W) set read mode
-            setf    DB_TRIS, A              ; (1R) release data bus to RAM
-            
-            incf    AB_LAT_L, F, A          ; (2R) increment address LSB
-            movlw   0x00                    ; (3R) 16-bit addition
-            addwfc  AB_LAT_H, F, A          ; (4R) increment address MSB
-            bnc     load_loop               ; (6R) branch if address < 0xFFFF
-            
-            bsf     PERIF_LAT, nRAM, A      ; deselect RAM
-
-
-;===============================================================================
 ; RESET 65C02
 ;===============================================================================
 
-reset_6502: setf    AB_TRIS_L, A            ; release address bus to 65C02
+reset_6502: setf    DB_TRIS, A              ; release data bus to 65C02
+            setf    AB_TRIS_L, A            ; release address bus to 65C02
             setf    AB_TRIS_H, A     
             bsf     PERIF_TRIS, RnW, A      ; release RnW pin to 65C02
             bsf     CTRL_LAT, BE, A         ; 65C02 now controls the buses
@@ -326,20 +386,103 @@ ram_access: nop                             ; (7L) timing adjustment
 
 
 ;===============================================================================
+; HELPER FUNCTIONS
+;===============================================================================
+
+;= PRINTHEX ====================================================================
+; Print byte in ASCII hexadecimal to the terminal.
+;
+; Parameters:
+;   W - byte.
+;
+; Returns:
+;   none.
+;
+; Remarks:
+;   This function prints an 8-bit byte to the terminal in ASCII hexadecimal
+;   format.
+
+printhex:   movwf   reg8A, A
+            
+            swapf   WREG, W, A
+            movwf   reg8B, A
+            
+            movlw   0x0F
+            andwf   reg8B, F, A
+            
+            movlw   0x0A
+            cpfslt  reg8B, A
+            bra     notless0
+            
+conv0:      movlw   0x30
+            xorwf   reg8B, W, A
+            call    uart_write
+            
+            movlw   0x0F
+            andwf   reg8A, F, A
+            
+            movlw   0x0A
+            cpfslt  reg8A, A
+            bra     notless1
+            
+conv1:      movlw   0x30
+            xorwf   reg8A, W, A
+            call    uart_write
+            
+            return
+            
+notless0:   movlw   0x67
+            addwf   reg8B, F, A
+            bra     conv0
+            
+notless1:   movlw   0x67
+            addwf   reg8A, F, A
+            bra     conv1
+
+
+;===============================================================================
 ; UNINITIALIZED INTERNAL RAM
 ;===============================================================================
 
-            UDATA
+BSS         UDATA
 
-awRegTable  res     2 * 8                   ; 8 peripheral register addresses
-byDummyReg  res     2                       ; dummy register for unused regs
+awRegTable: res     2 * 8                   ; 8 peripheral register addresses
+byDummyReg: res     2                       ; dummy register for unused regs
+
+
+STACK       UDATA
+
+abyStack    res     .256
 
 
 ;===============================================================================
-; REGISTER TABLE ROM
+; UNINITIALIZED INTERNAL ACCESS RAM
 ;===============================================================================
 
-REG_TABLE   CODE_PACK
+BSS_ACS     UDATA_ACS
+
+;= PSEUDO REGISTERS ============================================================
+
+reg8A:
+reg16A:
+reg32A:     res     4                       ; register A
+
+reg8B:
+reg16B:
+reg32B:     res     4                       ; register B
+
+reg8C:
+reg16C:
+reg32C:     res     4                       ; register C
+
+
+;===============================================================================
+; READ ONLY DATA - PROGRAM ROM
+;===============================================================================
+
+RODATA      CODE_PACK
+
+;= REGISTER TABLE ==============================================================
 
             ;- device 0 - EUSART -----------------------------------------------
 awRegTblROM dw      RC1REG
@@ -352,12 +495,19 @@ awRegTblROM dw      RC1REG
             dw      byDummyReg
 
 
-;===============================================================================
-; EXTERNAL SRAM IMAGE
-;===============================================================================
+;= STRINGS =====================================================================
 
-BIOS        CODE_PACK
+szClrScr:   db      ESC, "[2J"            ; clear terminal
+            db      ESC, "[H", NUL        ; reset cursor
+            
+szBanner:   db      "KitLoad ", VERSION, LF
+            db      "Copyright 2020 Ryan Clarke", LF, LF, NUL
+            
+szLoadErr:  db      BEL, "Unable to Load KitOS", LF, NUL
 
-abyBIOS     BIOS_DATA
+szLoadOS:   db      "Loading KitOS", NUL
+
+
+;===============================================================================
 
             END
